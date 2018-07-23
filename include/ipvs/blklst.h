@@ -24,18 +24,13 @@
 struct blklst_entry {
     struct list_head    list;
     union inet_addr     vaddr;
+    uint16_t            vport;
+    uint8_t             proto; 
     union inet_addr     blklst;
-    struct dpvs_timer   timer;
-    rte_atomic32_t      refcnt;
 };
 
-static inline void blklst_put(struct blklst_entry *blklst_node)
-{
-    rte_atomic32_dec(&blklst_node->refcnt);
-}
-
-struct blklst_entry *dp_vs_blklst_lookup(const union inet_addr *vaddr,
-                                       const union inet_addr *blklst);
+struct blklst_entry *dp_vs_blklst_lookup(uint8_t proto, const union inet_addr *vaddr,
+                                         uint16_t vport, const union inet_addr *blklst);
 void dp_vs_blklst_flush(struct dp_vs_service *svc);
 
 int dp_vs_blklst_init(void);

@@ -26,7 +26,7 @@
  * the way we use is based on Flow-Director (fdir), allocate
  * local source (e.g., <ip, port>) for each CPU core in advance.
  * and redirect the back traffic to that CPU by fdir. it does not
- * need two many fdir rules, the number of rules can be equal to
+ * need too many fdir rules, the number of rules can be equal to
  * the number of CPU core.
  *
  * LVS use laddr and try <laddr,lport> to see if is used when
@@ -168,6 +168,20 @@ static int __add_del_filter(struct netif_port *dev, lcoreid_t cid,
 #ifdef CONFIG_DPVS_SAPOOL_DEBUG
     char ipaddr[64];
 #endif
+
+    if (dev->netif_ops && dev->netif_ops->op_filter_supported) {
+        if (dev->netif_ops->op_filter_supported(dev, RTE_ETH_FILTER_FDIR) < 0) {
+            if (dev->nrxq <= 1)
+                return EDPVS_OK;
+            RTE_LOG(ERR, SAPOOL, "%s: FDIR is not supported by device %s. Only"
+                    " single rxq can be configured.\n", __func__, dev->name);
+            return EDPVS_NOTSUPP;
+        }
+    } else {
+        RTE_LOG(ERR, SAPOOL, "%s: FDIR support of device %s is not known.\n",
+                __func__, dev->name);
+        return EDPVS_INVAL;
+    }
 
     err = netif_get_queue(dev, cid, &queue);
     if (err != EDPVS_OK)
@@ -492,14 +506,14 @@ int sa_fetch(struct netif_port *dev, const struct sockaddr_in *daddr,
     int err;
     assert(saddr);
 
-    if (saddr->sin_addr.s_addr != INADDR_ANY && saddr->sin_port != 0)
+    if (saddr && saddr->sin_addr.s_addr != INADDR_ANY && saddr->sin_port != 0)
         return 0; /* everything is known, why call this function ? */
 
     /* if source IP is assiged, we can find ifa->this_sa_pool
      * without @daddr and @dev. */
-    if (saddr && saddr->sin_addr.s_addr) {
+    if (saddr->sin_addr.s_addr) {
         ifa = inet_addr_ifa_get(AF_INET, dev,
-                                (union inet_addr*)&saddr->sin_addr);
+                (union inet_addr*)&saddr->sin_addr);
         if (!ifa)
             return EDPVS_NOTEXIST;
 
@@ -517,7 +531,7 @@ int sa_fetch(struct netif_port *dev, const struct sockaddr_in *daddr,
         return err;
     }
 
-    /* try to found source ifa by @dev and @daddr */
+    /* try to find source ifa by @dev and @daddr */
     memset(&fl, 0, sizeof(struct flow4));
     fl.oif = dev;
     fl.daddr.s_addr = daddr ? daddr->sin_addr.s_addr : htonl(INADDR_ANY);
@@ -585,14 +599,14 @@ int sa_release(const struct netif_port *dev, const struct sockaddr_in *daddr,
 int sa_pool_stats(const struct inet_ifaddr *ifa, struct sa_pool_stats *stats)
 {
     struct dpvs_msg *req, *reply;
-    struct dpvs_multicast_queue *replys = NULL;
+    struct dpvs_multicast_queue *replies = NULL;
     int err;
 
     memset(stats, 0, sizeof(*stats));
 
     /*
      * worker need know which ifa's stats to get.
-     * but passing @ifa pointer to worker lcores is not make sence,
+     * but passing @ifa pointer to worker lcores doesn't make sense,
      * note the worker must only access per-lcore data ifa->sa_pools[cid].
      */
     req = msg_make(MSG_TYPE_SAPOOL_STATS, 0, DPVS_MSG_MULTICAST,
@@ -600,7 +614,7 @@ int sa_pool_stats(const struct inet_ifaddr *ifa, struct sa_pool_stats *stats)
     if (!req)
         return EDPVS_NOMEM;
 
-    err = multicast_msg_send(req, 0, &replys);
+    err = multicast_msg_send(req, 0, &replies);
     if (err != EDPVS_OK) {
         RTE_LOG(ERR, SAPOOL, "%s: mc msg send fail: %s\n", __func__,
                 dpvs_strerror(err));
@@ -608,7 +622,7 @@ int sa_pool_stats(const struct inet_ifaddr *ifa, struct sa_pool_stats *stats)
         return err;
     }
 
-    list_for_each_entry(reply, &replys->mq, mq_node) {
+    list_for_each_entry(reply, &replies->mq, mq_node) {
         struct sa_pool_stats *st = (struct sa_pool_stats *)reply->data;
         assert(st);
 

@@ -21,6 +21,7 @@
 #include <errno.h>
 #include <unistd.h>
 #include <stdbool.h>
+#include <numa.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <net/if.h>
@@ -44,10 +45,15 @@ const char *dpvs_strerror(int err)
         { EDPVS_NOTEXIST,       "not exist" },
         { EDPVS_INVPKT,         "invalid packet" },
         { EDPVS_DROP,           "packet dropped" },
+        { EDPVS_NOPROT,         "no protocol" },
+        { EDPVS_NOROUTE,        "no route" },
+        { EDPVS_DEFRAG,         "defragment error" },
+        { EDPVS_FRAG,           "fragment error" },
         { EDPVS_DPDKAPIFAIL,    "failed dpdk api" },
         { EDPVS_IDLE,           "nothing to do" },
         { EDPVS_BUSY,           "resource busy" },
         { EDPVS_NOTSUPP,        "not support" },
+        { EDPVS_RESOURCE,       "no resource" },
         { EDPVS_OVERLOAD,       "overloaded" },
         { EDPVS_NOSERV,         "no service" },
         { EDPVS_DISABLED,       "disabled" },
@@ -57,11 +63,12 @@ const char *dpvs_strerror(int err)
         { EDPVS_IO,             "I/O error" },
         { EDPVS_MSG_FAIL,       "msg callback failed"},
         { EDPVS_MSG_DROP,       "msg dropped"},
-        { EDPVS_SYSCALL,        "system call failed"},
-        { EDPVS_KNICONTINUE,    "kni to continue"},
         { EDPVS_PKTSTOLEN,      "stolen packet"},
-        { EDPVS_INPROGRESS,     "in progress"},
+        { EDPVS_SYSCALL,        "system call failed"},
         { EDPVS_NODEV,          "no such device"},
+
+        { EDPVS_KNICONTINUE,    "kni to continue"},
+        { EDPVS_INPROGRESS,     "in progress"},
     };
     int i;
 
@@ -83,6 +90,18 @@ void dpvs_state_set(dpvs_state_t stat)
 dpvs_state_t dpvs_state_get(void)
 {
     return g_dpvs_tate;
+}
+
+int get_numa_nodes(void)
+{
+    int numa_nodes;
+
+    if (numa_available() < 0)
+        numa_nodes = 0;
+    else
+        numa_nodes = numa_max_node();
+
+    return (numa_nodes + 1);
 }
 
 /* if (num+offset) == 2^n, return true,
@@ -169,4 +188,78 @@ int linux_hw_mc_add(const char *ifname, const uint8_t hwma[ETH_ALEN])
 int linux_hw_mc_del(const char *ifname, const uint8_t hwma[ETH_ALEN])
 {
     return linux_hw_mc_mod(ifname, hwma, false);
+}
+
+ssize_t readn(int fd, void *vptr, size_t n)
+{
+    size_t nleft;
+    ssize_t nread;
+    char *ptr;
+
+    ptr = vptr;
+    nleft = n;
+    while (nleft > 0) {
+        if ((nread = read(fd, ptr, nleft)) < 0) {
+            if (errno == EINTR)
+                nread = 0;      /* and call read() again */
+            else
+                return (-1);
+        } else if (nread == 0)
+            break;      /* EOF */
+
+        nleft -= nread;
+        ptr += nread;
+    }
+
+    return (n - nleft);     /* return >= 0 */
+}
+
+/* write "n" bytes to a descriptor */
+ssize_t writen(int fd, const void *vptr, size_t n)
+{
+    size_t nleft;
+    ssize_t nwritten;
+    const char *ptr;
+
+    ptr = vptr;
+    nleft = n;
+
+    while (nleft > 0) {
+        if ((nwritten = write(fd, ptr, nleft)) <= 0) {
+            if (nwritten < 0 && errno == EINTR)
+                nwritten = 0;       /* and call write() again */
+            else
+                return (-1);        /* error */
+        }
+
+        nleft -= nwritten;
+        ptr += nwritten;
+    }
+
+    return (n);
+}
+
+/* send "n" bytes to a descriptor */
+ssize_t sendn(int fd, const void *vptr, size_t n, int flags)
+{
+    size_t nleft;
+    ssize_t nwritten;
+    const char *ptr;
+
+    ptr = vptr;
+    nleft = n;
+
+    while (nleft > 0) {
+        if ((nwritten = send(fd, ptr, nleft, flags)) <= 0) {
+            if (nwritten < 0 && errno == EINTR)
+                nwritten = 0;       /* and call send() again */
+            else
+                return (-1);        /* error */
+        }
+
+        nleft -= nwritten;
+        ptr += nwritten;
+    }
+
+    return (n);
 }

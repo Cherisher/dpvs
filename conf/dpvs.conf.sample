@@ -18,7 +18,7 @@ global_defs {
 
 ! netif config
 netif_defs {
-    <init> pktpool_size     524287
+    <init> pktpool_size     2097151
     <init> pktpool_cache    256
 
     <init> device dpdk0 {
@@ -49,7 +49,7 @@ netif_defs {
         kni_name                dpdk1.kni
     }
 
-!    <init> device bond0 {
+!    <init> bonding bond0 {
 !        mode        0
 !        slave       dpdk0
 !        slave       dpdk1
@@ -212,13 +212,12 @@ timer_defs {
 ! dpvs neighbor config
 neigh_defs {
     <init> unres_queue_length  128
-    <init> pktpool_size        1023
-    <init> pktpool_cache       32
     <init> timeout             60
 }
 
 ! dpvs ipv4 config
 ipv4_defs {
+    <init> ipv4_forward off ! set this to on, dpvs will forward packets that NOT hit rules directly
     <init> default_ttl         64
     fragment {
         <init> bucket_number   4096

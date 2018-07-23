@@ -31,7 +31,9 @@
 #define RTE_LOGTYPE_IPV4    RTE_LOGTYPE_USER1
 
 #define INET_MAX_PROTS      256     /* cannot change */
-#define INET_DEF_TTL        64
+
+#define IPV4_FORWARD_DEF  false
+static bool ipv4_forward_switch = IPV4_FORWARD_DEF;
 
 static uint32_t inet_def_ttl = INET_DEF_TTL;
 
@@ -54,6 +56,17 @@ static void ipv4_default_ttl_handler(vector_t tokens)
     FREE_PTR(str);
 }
 
+static void ipv4_forward_handler(vector_t tokens)
+{
+    char *str = set_value(tokens);
+    assert(str);
+    if (strcasecmp(str, "on") == 0)
+        ipv4_forward_switch = true;
+    else if (strcasecmp(str, "off") == 0)
+        ipv4_forward_switch = false;
+    FREE_PTR(str);
+}
+
 void ipv4_keyword_value_init(void)
 {
     if (dpvs_state_get() == DPVS_STATE_INIT) {
@@ -67,6 +80,7 @@ void install_ipv4_keywords(void)
 {
     install_keyword_root("ipv4_defs", NULL);
     install_keyword("default_ttl", ipv4_default_ttl_handler, KW_TYPE_INIT);
+    install_keyword("ipv4_forward", ipv4_forward_handler, KW_TYPE_INIT);
 }
 
 static struct list_head inet_hooks[INET_HOOK_NUMHOOKS];
@@ -191,6 +205,7 @@ static int ipv4_local_in_fin(struct rte_mbuf *mbuf)
     const struct inet_protocol *prot;
     struct ipv4_hdr *iph = ip4_hdr(mbuf);
     struct route_entry *rt = mbuf->userdata;
+    int (*handler)(struct rte_mbuf *mbuf) = NULL;
 
     /* remove network header */
     hlen = ip4_hdrlen(mbuf);
@@ -218,14 +233,17 @@ static int ipv4_local_in_fin(struct rte_mbuf *mbuf)
     /* deliver to upper layer */
     rte_spinlock_lock(&inet_prot_lock);
     prot = inet_prots[iph->next_proto_id];
-    if (prot) {
-        err = prot->handler(mbuf);
+    if (prot)
+        handler = prot->handler;
+    rte_spinlock_unlock(&inet_prot_lock);
+
+    if (handler) {
+        err = handler(mbuf);
         IP4_INC_STATS(indelivers);
     } else {
         err = EDPVS_KNICONTINUE; /* KNI may like it, don't drop */
         IP4_INC_STATS(inunknownprotos);
     }
-    rte_spinlock_unlock(&inet_prot_lock);
 
     return err;
 }
@@ -267,9 +285,13 @@ static int ipv4_output_fin2(struct rte_mbuf *mbuf)
      * really confusing.
      */
     mbuf->packet_type = ETHER_TYPE_IPv4;
+    mbuf->l3_len = ip4_hdrlen(mbuf);
+
+    /* reuse @userdata/@udata64 for prio (used by tc:pfifo_fast) */
+    mbuf->udata64 = ((ip4_hdr(mbuf)->type_of_service >> 1) & 15);
+
     err = neigh_resolve_output(&nexthop, mbuf, rt->port);
     route4_put(rt);
-    mbuf->userdata = NULL;
     return err;
 }
 
@@ -321,6 +343,11 @@ static int ipv4_forward(struct rte_mbuf *mbuf)
             && (iph->fragment_offset & htons(IPV4_HDR_DF_FLAG))) {
         IP4_INC_STATS(fragfails);
         icmp_send(mbuf, ICMP_DEST_UNREACH, ICMP_UNREACH_NEEDFRAG, htonl(mtu));
+        goto drop;
+    }
+
+    /* Drop packet if the switch is off */
+    if (!ipv4_forward_switch) {
         goto drop;
     }
 
@@ -522,7 +549,7 @@ int ipv4_term(void)
     return EDPVS_OK;
 }
 
-static inline uint32_t ip4_select_id(struct ipv4_hdr *iph)
+uint32_t ip4_select_id(struct ipv4_hdr *iph)
 {
     uint32_t hash, id;
     rte_atomic32_t *p_id;
@@ -537,7 +564,7 @@ static inline uint32_t ip4_select_id(struct ipv4_hdr *iph)
     return id;
 }
 
-static int ipv4_local_out(struct rte_mbuf *mbuf)
+int ipv4_local_out(struct rte_mbuf *mbuf)
 {
     struct ipv4_hdr *iph = ip4_hdr(mbuf);
     struct route_entry *rt = mbuf->userdata;

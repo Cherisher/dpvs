@@ -10,8 +10,16 @@ DPVS Tutorial
   - [Full-NAT with OSPF/ECMP (two-arm)](#fnat-ospf)
   - [Full-NAT with Keepalived (one-arm)](#fnat-keepalive)
 * [DR Mode (one-arm)](#dr)
+* [Tunnel Mode(one-arm)](#tunnel)
+* [NAT Mode(one-arm)](#nat)
 * [SNAT Mode (two-arm)](#snat)
-* [Bonding and VLAN devices](#bond-vlan)
+* [Virtual devices](#virt-dev)
+  - [Bonding Device](#vdev-bond)
+  - [VLAN Device](#vdev-vlan)
+  - [Tunnel Device](#vdev-tun)
+  - [KNI for virtual device](#vdev-kni)
+* [UDP Option of Address (UOA)](#uoa)
+* [Launch DPVS in Virtual Machine (Ubuntu)](#Ubuntu16.04)
 
 > To compile and launch DPVS, pls check *README.md* for this project.
 
@@ -19,11 +27,9 @@ DPVS Tutorial
 
 # Terminology
 
-For the meanings of *Full-NAT* (`FNAT`), `DR`, `toa`, `OSPF`/`ECMP` and `keepalived`, pls refer [LVS](www.linuxvirtualserver.org) and [Alibaba/LVS](https://github.com/alibaba/LVS/tree/master/docs).
+About the concepts of *Full-NAT* (`FNAT`), `DR`, `Tunnel`, `toa`, `OSPF`/`ECMP` and `keepalived`, pls refer [LVS](www.linuxvirtualserver.org) and [Alibaba/LVS](https://github.com/alibaba/LVS/tree/master/docs).
 
-Note `DPVS` support `FNAT`, `DR`, `SNAT` forwarding modes, and each mode can be configured as `one-arm` or `two-arm` topology, with or without `ospfd`/`keepalived`. There're too many combinations, I cannot list all the examples here. Let's just give some popular working models used in our daily work.
-
-> `Tunneling` and `NAT` is not supported because we didn't see strong demand yet, at least from *iQiYi*. May add them in the future. :)
+Note `DPVS` support `FNAT`, `DR`, `Tunnel`, `SNAT` forwarding modes, and each mode can be configured as `one-arm` or `two-arm` topology, with or without `OSFP/ECMP`/`keepalived`. There're too many combinations, I cannot list all the examples here. Let's just give some popular working models used in our daily work.
 
 <a id='one-two-arm'/>
 
@@ -33,7 +39,7 @@ The term *two-arm* means, you have clients in one side of *load-balancer* (`LB`)
 
 On the other hand, *one-arm* means all clients and servers are in same side of `load-balancer`, `LB` forwards traffic through the same logical network interface.
 
-> *Logical interface* (or *device*) could be physical `DPDK` interface, or `DPVS` virtual devices like *Bonding* and *VLAN* devices.
+> *Logical interface* (or *device*) could be physical `DPDK` interface, or `DPVS` virtual devices like *bonding*, *vlan* and *tunnel* devices.
 
 To make things easier, we do not consider virtual devices for now. Thus, *two-arm* topology need
 
@@ -41,7 +47,7 @@ To make things easier, we do not consider virtual devices for now. Thus, *two-ar
 * `/etc/dpvs.conf` should also be configured with two interfaces. Pls refer the file `conf/dpvs.conf.sample`.
 
 ```
-$ dpdk-devbind --st
+$ dpdk-devbind --status
 
 Network devices using DPDK-compatible driver
 ============================================
@@ -161,13 +167,20 @@ Pls use `ipvsadm --add-laddr` to set `LIP` instead of `dpip addr add ...`. Becau
 
 Another tip is you can use `dpip addr add 10.0.0.100/16 dev dpdk1` to set VIP and WAN route simultaneously. But let's use two commands to make it clear.
 
-Optionally, if `RS` need to obtain client's real *IP:port* by socket API, e.g., `getpeername` or `accept`, instead of some application manner. `TOA` kernel module should be installed on `RS`. `TOA` is developped for some version of Linux kernel, and porting may needed for other versions or other OS Kernel like *BSD* or *mTCP*. Pls refer this [doc](https://github.com/alibaba/LVS/blob/master/docs/LVS_user_manual.pdf) to get `TOA` source code and porting to your `RS` if needed.
+Optionally, if `RS` need to obtain client's real *IP:port* by socket API, e.g., `getpeername` or `accept`, instead of some application manner. `TOA` kernel module should be installed on `RS`. `TOA` is developped for some version of Linux kernel, and porting may needed for other versions or other OS Kernel like *BSD* or *mTCP*.
+
+You could refer to following links to get `TOA` source code and porting to your `RS` if needed.
+
+* [Alibaba LVS](https://github.com/alibaba/LVS/blob/master/docs/LVS_user_manual.pdf)
+* [UCloud TOA](https://docs.ucloud.cn/security/uads/faq/game)
+* [Huawai TOA](https://github.com/Huawei/TCP_option_address)
+* [IPVS CA](https://github.com/yubo/ip_vs_ca)
 
 <a id='fnat-ospf'/>
 
 ## Full-NAT with OSPF/ECMP (two-arm)
 
-To work with *OSPF*, the patch in `patch/dpdk-16.07/` must be applied to *DPDK-16.07* and the correct `rte_kni.ko` should be installed.
+To work with *OSPF*, the patch in `patch/dpdk-stable-17.05.2/` must be applied to *dpdk-stable-17.05.2* and the correct `rte_kni.ko` should be installed.
 
 `DPVS` OSPF-cluster model looks like this, it leverage `OSPF/ECMP` for HA and high-scalability. This model is widely used in practice.
 
@@ -502,6 +515,96 @@ Your ip:port : 192.168.100.46:13862
 
 > DR mode for two-arm is similar with [two-arm FNAT](#simple-fnat), pls change the forwarding mode by `ipvsadm -g`, and you need NOT config `LIP`. Configuration of `RS`es are the same with one-arm.
 
+<a id='tunnel'/>
+
+# Tunnel Mode (one-arm)
+
+Traffic flow of tunnel mode is the same as DR mode. It forwards packets to RSs, and then RSs send replies to clients directly. Different with DR mode, tunnel mode can forward packets across L2 network through ipip tunnels between DPVS and RSs.
+
+![tunnel-one-arm](./pics/tunnel-one-arm.png)
+
+`DPVS` configs of the above diagram as follows.
+``` bash
+## DPVS configs ##
+# config LAN network on dpdk0
+./dpip addr add 10.140.16.48/20 dev dpdk0
+# config default route, `src` must be set for tunnel mode
+./dpip route add default via 10.140.31.254 src 10.140.16.48 dev dpdk0
+# add service <VIP:vport> to forwarding, scheduling mode is RR
+./ipvsadm -A -t 10.140.31.48:80 -s rr
+# add RS in the same subnet with DPVS, forwarding mode is tunnel
+./ipvsadm -a -t 10.140.31.48:80 -r 10.140.18.33 -i
+# add another RS in different subnet with DPVS, forwarding mode is tunnel
+./ipvsadm -a -t 10.140.31.48:80 -r 10.40.84.170 -i
+# add VIP and the route will generate automatically
+./dpip addr add 10.140.31.48/32 dev dpdk0
+
+```
+DPVS tunnel requires RS supports ip tunnel. VIP should be configured and arp_ignore should be set on RS.
+```bash
+## for each Real Server ##
+rs$ ifconfig tunl0 10.140.31.48 netmask 255.255.255.255 broadcast 10.140.31.48 up
+rs$ sysctl -w net.ipv4.conf.tunl0.arp_ignore=1  # ignore ARP on tunl0
+rs$ sysctl -w net.ipv4.conf.tunl0.rp_filter=2 # use loose source validation
+```
+You should note that default rp_filter uses strict source validation, but source route for incoming packets on tunl0 is not configured on tunl0. So we change rp_filter behavior of tunl0 to loose source validation mode to avoid packet drop on RSs.
+
+You can test the dpvs tunnel service now.
+
+```bash
+client$ curl 10.140.31.48:80
+Hi, I am 10.140.18.33.
+client$ curl 10.140.31.48:80
+Hi, I am 10.40.84.170.
+
+```
+
+<a id=`nat`/>
+
+# NAT mode (one-arm)
+
+A strict limitation exists for DPVS NAT mode: **DPVS `NAT` mode can only work in single lcore**. It is hard for DPVS to support multi-lcore NAT forwarding mode due to the following facts.
+
+* DPVS session entries are splited and distributed on lcores by RSS.
+* NAT forwarding requires both inbound and outbound traffic go through DPVS.
+* Only dest IP/port is translated in NAT forwarding, source IP/port is not changed.
+* Very limited maximum flow director rules can be set for a NIC.
+
+So, if no other control of the traffic flow, outbound packets may arrive at different lcore from inbound packets. If so, outbound packets would be dropped because session lookup miss. Full-NAT fixes the problem by using Flow Director(FDIR). However, there are very limited rules can be added for a NIC, i.e. 8K for XT-540. Unlike Full-NAT, NAT does not have local IP/port, so FDIR rules can only be set on source IP/port, which means only thousands concurrency is supported. Therefore, FDIR is not feasible for NAT.
+
+Whatever, we give a simple example for NAT mode. Remind it only works single lcore.
+
+![nat-one-arm](./pics/nat-one-arm.png)
+
+```bash
+## DPVS configs ##
+# config LAN network on bond0, routes will generate automatically
+./dpip addr add 192.168.0.66/24 dev bond0
+./dpip addr add 10.140.31.48/20 dev bond0
+# add service <VIP:vport> to forwarding, scheduling mode is RR
+./ipvsadm -A -t 192.168.0.89:80 -s -rr
+# add two RSs, forwarding mode is NAT
+./ipvsadm -A -t 192.168.0.89:80 -r 10.140.18.33 -m
+./ipvsadm -A -t 192.168.0.89:80 -r 10.140.18.34 -m
+# add VIP and the route will generate automatically
+./dpip addr add 192.168.0.89/32 dev bond0
+```
+
+On RSs, back routes should be pointed to DPVS.
+```bash
+## for each real server ##
+ip route add 192.168.0.0/24 via 10.140.31.48 dev eth0
+
+```
+
+Now you can test DPVS NAT mode.
+```bash
+client$ curl 192.168.0.89:80
+Hi, I am 10.140.18.33.
+client$ curl 192.168.0.89:80
+Hi, I am 10.140.18.34.
+```
+
 <a id='snat'/>
 
 # SNAT Mode (two-arm)
@@ -552,6 +655,62 @@ MATCH1='proto=icmp,src-range=192.168.100.0-192.168.100.254,oif=dpdk1'
 ./ipvsadm -a -H $MATCH1 -r $WAN_IP:0 -w 100 -J
 ```
 
+You can also use keepalived to configure SNAT instead of using ipvsadm. Every SNAT serivce should has parameter 'match':
+
+```
+virtual_server match SNAT1 {
+    protocol UDP
+    lb_algo rr
+    lb_kind SNAT
+    src-range 192.168.100.0-192.168.100.254
+    oif dpdk1
+
+    real_server 123.1.2.1  0 {
+        weight 4
+    }
+}
+
+virtual_server match SNAT2 {
+    protocol ICMP
+    lb_algo wrr
+    lb_kind SNAT
+    src-range 192.168.100.1-192.168.100.254
+    dst-range 123.1.2.0-123.1.2.254
+    oif dpdk1
+    iif dpdk0
+
+    real_server 123.1.2.1  0 {
+        weight 4
+    }
+}
+```
+
+If you also want to use keepalived instead of using dpip to configure WAN/LAN IP, you can using 'alpha' and 'omega' to configure keepalived. Healthy check is needed in alpha mode, so you have to make a healthy check. And the result of the healthy check must always be true or RS(LAN IP in fact) will be deleted. You can use MISC_CHECK to make real_server/WAN IP always be healthy:
+
+```
+virtual_server match SNAT {
+    protocol UDP
+    delay_loop 3
+    lb_algo rr
+    lb_kind SNAT
+    src-range 192.168.100.0-192.168.100.254
+    oif dpdk1
+    alpha
+    omega
+    quorum 1
+    quorum_up "dpip addr add XXX;" ##Here is your cmd, you can also use a script.
+    quorum_down "dpip addr del XXX;"
+
+    real_server 123.1.2.2 0 {
+        weight 4
+        MISC_CHECK {
+           misc_path "exit 0"##Just make a healthy check which will always judge real_server healthy
+           misc_timeout 10
+        }
+    }
+}
+```
+
 For hosts in "LAN", the default route should be set to `DPVS` server's LAN IP.
 
 ```bash
@@ -565,27 +724,142 @@ host$ ping www.iqiyi.com
 host$ curl www.iqiyi.com
 ```
 
-<a id='bond-vlan'/>
+<a id='virt-dev'/>
 
-# Bonding and VLAN devices
+# Virtual Devices
 
-`DPVS` supports *Bonding* and *VLAN* virtual devices.
+`DPVS` supports virtual devices, such as *Bonding*, *VLAN*, *IP-in-IP* and *GRE* Tunnel.
 
-For Bonding device, both `DPVS` and Switch need to set the Bonding interfaces with same Bonding mode. Note DPVS just supports bonding mode 0 and 4 for now. To enable Bonding device on `DPVS`, pls refer `conf/dpvs.bond.conf.sample`. Each Bonding device needs one or more DPDK Physical device (`dpdk0`, ...) to work as it's slaves.
+<a id='vdev-bond'/>
+
+## Bonding Device
+
+For Bonding device, both `DPVS` and connected Switch/Router need to set the Bonding interfaces with *same* Bonding mode. Note `DPVS` just supports bonding mode 0 and 4 for now. To enable Bonding device on `DPVS`, pls refer `conf/dpvs.bond.conf.sample`. Each Bonding device needs one or more DPDK Physical device (`dpdk0`, ...) to work as it's slaves.
+
+<a id='vdev-vlan'/>
+
+## VLAN Device
 
 To use *VLAN* device, you can use `dpip` tool, *VLAN* device can be created based on real DPDK Physical device (e.g., `dpdk0`, `dpdk1`) or Bonding device (e.g., `bond0`). But cannot create VLAN device on VLAN device.
 
 This is the VLAN example, pls check `dpip vlan help` for more info.
 
 ```bash
-./dpip vlan add dpdk0.100 link dpdk0 proto 802.1q id 100
-./dpip vlan add link dpdk0 proto 802.1q id 101            # auto generate dev name
-./dpip vlan add link dpdk1 id 102
-./dpip vlan add link bond1 id 103
+$ dpip vlan add dpdk0.100 link dpdk0 proto 802.1q id 100
+$ dpip vlan add link dpdk0 proto 802.1q id 101            # auto generate dev name
+$ dpip vlan add link dpdk1 id 102
+$ dpip vlan add link bond1 id 103
 ```
 
-![bond-vlan-kni](./pics/bond-vlan-kni.png)
+<a id='vdev-tun'/>
+
+## Tunnel Device
+
+`DPVS` support tunnel devices, including `IP-in-IP` and `GRE` tunnel. This can be used for example "SNAT-GRE" cluster, remote host use tunnel to access Internet through `DPVS` SNAT cluster.
+
+Setting up tunnel device is just like what we do on Linux, use `dpip` instead of `ip(8)`.
+
+```bash
+$ dpip tunnel add mode ipip ipip1 local 1.1.1.1 remote 2.2.2.2
+$ dpip tunnel add gre1 mode gre local 1.1.1.1 remote 2.2.2.2 dev dpdk0
+```
+
+Pls also check `dpip tunnel help` for details.
+
+> Pls Note, by using Tunnel
+> 1. RSS schedule all packets to same queue/CPU since underlay source IP may the same.
+>    if one lcore's `sa_pool` get full, `sa_miss` happens.
+> 2. `fdir`/`rss` won't works well on tunnel deivce, do not use tunnel for FNAT.
+
+<a id='vdev-kni'/>
+
+## KNI for Banding/VLAN
 
 Like DPDK Physical device, the *Bonding* and *VLAN* Virtual devices (e.g., `bond0` and `dpdk0.100`) have their own related `KNI` devices on Linux environment (e.g., `bond0.kni`, `dpdk0.100.kni`).
 
-To configure `DPVS` (`FNAT`/`DR`/`SNAT`, `one-arm`/`two-arm`, `keepalived`/`ospfd`) for Virtual device is nothing special. Just "replace" the logical interfaces on sections above (like `dpdk0`, `dpdk1`, `dpdk1.kni`) with corresponding virtual devices.
+This is the example devices relationship between physical, vlan, bonding and `KNI` devices.
+
+![bond-vlan-kni](./pics/bond-vlan-kni.png)
+
+To configure `DPVS` (`FNAT`/`DR`/`Tunnel`/`SNAT`, `one-arm`/`two-arm`, `keepalived`/`ospfd`) for Virtual device is nothing special. Just "replace" the logical interfaces on sections above (like `dpdk0`, `dpdk1`, `dpdk1.kni`) with corresponding virtual devices.
+
+<a id='uoa'/>
+
+# UDP Option of Address (UOA)
+
+As we know, `TOA` is used to get TCP's real Client IP/Port in LVS FNAT mode. We introduce *UDP Option of Address* or `UOA`, to let `RS` being able to retrieve *real client IP/Port* for the scenario source IP/port are modified by middle boxes (like UDP FNAT).
+
+To achieve this,
+
+1. The kernel module `uoa.ko` is needed to be installed on `RS`, and
+2. the program on `RS` just need a `getsockopt(2)` call to get the real client IP/port.
+
+The example C code for RS to fetch Real Client IP can be found [here](../uoa/example/udp_serv.c).
+
+```bash
+rs$ insmod `uoa`
+rs$ cat /proc/net/uoa_stats
+ Success     Miss  Invalid|UOA  Got     None    Saved Ack-Fail
+12866352 317136864        0  3637127 341266254  3628560        0
+```
+
+Statistics are supported for debug purpose. Note `recvfrom(2)` is kept untouched, it will still return the source IP/port in packets, means the IP/port modified or translated by `DPVS` in UDP `FNAT` mode.
+It's useful to send the data back by socket. Pls note UDP socket is connect-less, one `socket-fd` can be used to communicate with different peers.
+
+Actually, we use private IP option to implement `UOA`, pls check the details in [uoa.md](../uoa/uoa.md).
+
+<a id='Ubuntu16.04'/>
+
+# Launch DPVS in Virtual Machine (Ubuntu)
+
+### DPDK build and install
+
+Before DPDK build and install ,fix code for ubuntu in vm
+
+```
+$ cd dpdk-stable-17.05.2/
+$ sed -i "s/pci_intx_mask_supported(dev)/pci_intx_mask_supported(dev)||true/g" lib/librte_eal/linuxapp/igb_uio/igb_uio.c
+```
+
+Now to set up DPDK hugepage,for more messages ( single-node system) pls refer the [link](http://dpdk.org/doc/guides/linux_gsg/sys_reqs.html).
+
+```bash
+$ # for single node machine
+$ echo 1024 > /sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepages
+```
+
+## Build DPVS on Ubuntu
+
+> may need install dependencies, like `openssl`, `popt` and `numactl`, e.g., ` apt-get install libpopt-dev libssl-dev libnuma-dev` (Ubuntu).
+
+## Launch DPVS on Ubuntu
+
+Now, `dpvs.conf` must be put at `/etc/dpvs.conf`, just copy it from `conf/dpvs.conf.single-nic.sample`.
+
+```bash
+$ cp conf/dpvs.conf.single-nic.sample /etc/dpvs.conf
+```
+
+The NIC for Ubuntu may not support flow-director(fdir),for that case ,pls use 'single worker',may decrease conn_pool_size .
+
+```bash
+queue_number        1
+! worker config (lcores)
+worker_defs {
+    <init> worker cpu0 {
+        type    master
+        cpu_id  0
+    }
+
+    <init> worker cpu1 {
+        type    slave
+        cpu_id  1
+        port    dpdk0 {
+            rx_queue_ids     0
+            tx_queue_ids     0
+            ! isol_rx_cpu_ids  9
+            ! isol_rxq_ring_sz 1048576
+        }
+    }
+
+```

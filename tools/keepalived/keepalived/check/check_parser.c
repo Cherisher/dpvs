@@ -156,7 +156,12 @@ proto_handler(vector_t *strvec)
 {
 	virtual_server_t *vs = LIST_TAIL_DATA(check_data->vs);
 	char *str = vector_slot(strvec, 1);
-	vs->service_type = (!strcmp(str, "TCP")) ? IPPROTO_TCP : IPPROTO_UDP;
+	if(!strcmp(str, "UDP"))
+		vs->service_type = IPPROTO_UDP;
+	else if(!strcmp(str, "ICMP"))
+		vs->service_type = IPPROTO_ICMP;
+	else
+		vs->service_type = IPPROTO_TCP; /*default*/
 }
 static void
 hasuspend_handler(vector_t *strvec)
@@ -367,6 +372,50 @@ establish_timeout_handler(vector_t *strvec)
     vs->conn_timeout = conn_timeout;
 }
 
+static void
+src_range_handler(vector_t *strvec)
+{
+	virtual_server_t *vs = LIST_TAIL_DATA(check_data->vs);
+	snprintf(vs->srange, sizeof(vs->srange), "%s", (char *)vector_slot(strvec, 1));
+}
+
+static void
+dst_range_handler(vector_t *strvec)
+{
+	virtual_server_t *vs = LIST_TAIL_DATA(check_data->vs);
+	snprintf(vs->drange, sizeof(vs->drange), "%s", (char *)vector_slot(strvec, 1));
+}
+
+static void
+oif_handler(vector_t *strvec)
+{
+	virtual_server_t *vs = LIST_TAIL_DATA(check_data->vs);
+	snprintf(vs->oifname, sizeof(vs->oifname), "%s", (char *)vector_slot(strvec, 1));
+}
+
+static void
+iif_handler(vector_t *strvec)
+{
+	virtual_server_t *vs = LIST_TAIL_DATA(check_data->vs);
+	snprintf(vs->iifname, sizeof(vs->iifname), "%s", (char *)vector_slot(strvec, 1));
+}
+
+static void
+hash_target_handler(vector_t *strvec)
+{
+	virtual_server_t *vs = LIST_TAIL_DATA(check_data->vs);
+	char *str = vector_slot(strvec, 1);
+
+	if (!strcmp(str, "sip"))
+		vs->hash_target = IP_VS_SVC_F_SIP_HASH;
+	else if (!strcmp(str, "qid"))
+		vs->hash_target = IP_VS_SVC_F_QID_HASH;
+	else {
+		vs->hash_target = IP_VS_SVC_F_SIP_HASH;
+		log_message(LOG_INFO, "PARSER : unknown [%s] hash target, use source_ip", str);
+	}
+}
+
 vector_t *
 check_init_keywords(void)
 {
@@ -403,6 +452,11 @@ check_init_keywords(void)
 	install_keyword("ha_suspend", &hasuspend_handler);
 	install_keyword("ops", &ops_handler);
 	install_keyword("virtualhost", &virtualhost_handler);
+	install_keyword("src-range", &src_range_handler);
+	install_keyword("dst-range", &dst_range_handler);
+	install_keyword("oif", &oif_handler);
+	install_keyword("iif", &iif_handler);
+	install_keyword("hash_target", &hash_target_handler);
 
 	/* Pool regression detection and handling. */
 	install_keyword("alpha", &alpha_handler);

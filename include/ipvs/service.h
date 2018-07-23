@@ -23,6 +23,7 @@
 #include "dpdk.h"
 #include "inet.h"
 #include "netif.h"
+#include "match.h"
 #include "ipvs/ipvs.h"
 #include "ipvs/stats.h"
 #include "ipvs/dest.h"
@@ -33,17 +34,12 @@
 #define DP_VS_SVC_F_HASHED          0x0002      /* hashed entry */
 #define DP_VS_SVC_F_SYNPROXY        0x8000      /* synrpoxy flag */
 
+#define DP_VS_SVC_F_SIP_HASH        0x0100      /* sip hash target */
+#define DP_VS_SVC_F_QID_HASH        0x0200      /* quic cid hash target */
+
 #define DP_VS_SCHEDNAME_MAXLEN      16
 
 rte_rwlock_t __dp_vs_svc_lock;
-
-struct dp_vs_match {
-    /* range is more flexible than prefix. */
-    struct inet_addr_range  srange;     /* source range */
-    struct inet_addr_range  drange;     /* dest range */
-    int                     iif;        /* input iface */
-    int                     oif;        /* output iface */
-};
 
 /* virtual service */
 struct dp_vs_service {

@@ -31,6 +31,7 @@
 
 #define IFA
 #define RTE_LOGTYPE_IFA             RTE_LOGTYPE_USER1
+#define INET_ADDR_LOCK
 
 #define INET_ADDR_HSIZE_SHIFT       8
 #define INET_ADDR_HSIZE             (1U << INET_ADDR_HSIZE_SHIFT)
@@ -203,7 +204,7 @@ static int ifa_del_route(struct inet_ifaddr *ifa)
     return EDPVS_OK;
 }
 
-static void ifa_expire(void *arg)
+static int ifa_expire(void *arg)
 {
     struct inet_ifaddr *ifa = arg;
     struct timeval tv;
@@ -219,7 +220,7 @@ static void ifa_expire(void *arg)
         tv.tv_usec = 0;
         dpvs_timer_update(&ifa->timer, &tv, true);
         rte_rwlock_write_unlock(&in_addr_lock);
-        return;
+        return DTIMER_OK;
     }
 
     list_del(&ifa->d_list);
@@ -237,7 +238,7 @@ static void ifa_expire(void *arg)
     rte_atomic32_dec(&in_addr_cnt);
 
     rte_rwlock_write_unlock(&in_addr_lock);
-    return;
+    return DTIMER_STOP;
 }
 
 static int ifa_add_set(int af, const struct netif_port *dev, 
@@ -601,7 +602,7 @@ static void ifa_fill_param(int af, struct inet_addr_param *param,
     param->bcast    = ifa->bcast;
     param->scope    = ifa->scope;
     param->flags    = ifa->flags;
-    snprintf(param->ifname, sizeof(param->ifname), "%s", ifa->idev->dev->name);
+    snprintf(param->ifname, sizeof(param->ifname), "%.15s", ifa->idev->dev->name);
 
     if (ifa->flags & IFA_F_PERMANENT) {
         param->valid_lft = param->prefered_lft = 0;

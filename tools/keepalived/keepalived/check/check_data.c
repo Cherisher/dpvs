@@ -42,6 +42,9 @@ alloc_ssl(void)
 void
 free_ssl(void)
 {
+	if (!check_data)
+		return;
+
 	ssl_data_t *ssl = check_data->ssl;
 
 	if (!ssl)
@@ -55,6 +58,9 @@ free_ssl(void)
 static void
 dump_ssl(void)
 {
+	if (!check_data)
+      return;
+
 	ssl_data_t *ssl = check_data->ssl;
 
 	if (ssl->password)
@@ -372,6 +378,19 @@ dump_vs(void *data)
 #endif
 	}
 
+	switch (vs->hash_target) {
+
+	case IP_VS_SVC_F_SIP_HASH:
+		log_message(LOG_INFO, "   hash target = sip");
+		break;
+	case IP_VS_SVC_F_QID_HASH:
+		log_message(LOG_INFO, "   hash target = quicid");
+		break;
+	default:
+		log_message(LOG_INFO, "   hash target not support");
+		break;
+	}
+
 	if (vs->s_svr) {
 		log_message(LOG_INFO, "   sorry server = %s"
 				    , FMT_RS(vs->s_svr));
@@ -399,6 +418,8 @@ alloc_vs(char *ip, char *port)
 		memcpy(new->vsgname, port, size);
 	} else if (!strcmp(ip, "fwmark")) {
 		new->vfwmark = atoi(port);
+	} else if (!strcmp(ip, "match")) {
+		new->loadbalancing_kind = IP_VS_CONN_F_SNAT;
 	} else {
 		inet_stosockaddr(ip, port, &new->addr);
 	}
@@ -420,6 +441,11 @@ alloc_vs(char *ip, char *port)
 	new->local_addr_gname = NULL;
 	new->blklst_addr_gname = NULL;
 	new->vip_bind_dev = NULL;
+	new->hash_target = 0;
+	memset(new->srange, 0, 256);
+	memset(new->drange, 0, 256);
+	memset(new->iifname, 0, IFNAMSIZ);
+	memset(new->oifname, 0, IFNAMSIZ);
 
 	list_add(check_data->vs, new);
 }
@@ -507,6 +533,8 @@ alloc_check_data(void)
 void
 free_check_data(check_data_t *data)
 {
+	if (!check_data)
+		return;
 	free_list(data->vs);
 	free_list(data->vs_group);
 	free_list(data->laddr_group);

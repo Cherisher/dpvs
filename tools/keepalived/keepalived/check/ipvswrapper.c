@@ -31,7 +31,6 @@
 /* local helpers functions */
 static int parse_timeout(char *, unsigned *);
 static int string_to_number(const char *, int, int);
-static int modprobe_ipvs(void);
 static int parse_bps(char *, unsigned *);
 static int parse_limit_proportion(char *, unsigned *);
 
@@ -91,11 +90,9 @@ ipvs_start(void)
 	log_message(LOG_DEBUG, "Initializing ipvs 2.4");
 	/* Init IPVS kernel channel */
 	if (ipvs_init()) {
-		/* try to insmod the ip_vs module if ipvs_init failed */
-		if (modprobe_ipvs() || ipvs_init()) {
-			log_message(LOG_INFO,
-			       "IPVS : Can't initialize ipvs: %s",
-		 	       ipvs_strerror(errno));
+		log_message(LOG_INFO,
+				"IPVS : Can't initialize ipvs: %s",
+				ipvs_strerror(errno));
 			return IPVS_ERROR;
 		}
 	}
@@ -109,7 +106,8 @@ void
 ipvs_stop(void)
 {
 	/* Clean up the room */
-	FREE(urule);
+	if (urule)
+		FREE(urule);
 	ipvs_close();
 }
 
@@ -377,11 +375,9 @@ ipvs_start(void)
 	log_message(LOG_DEBUG, "Initializing ipvs 2.6");
 	/* Initialize IPVS module */
 	if (ipvs_init()) {
-		if (modprobe_ipvs() || ipvs_init()) {
-			log_message(LOG_INFO, "IPVS: Can't initialize ipvs: %s",
-			       ipvs_strerror(errno));
-			return IPVS_ERROR;
-		}
+		log_message(LOG_INFO, "IPVS: Can't initialize ipvs: %s",
+				ipvs_strerror(errno));
+		return IPVS_ERROR;
 	}
 
 	/* Allocate global user rules */
@@ -450,7 +446,7 @@ ipvs_talk(int cmd)
 			break;
 		case IP_VS_SO_SET_EDITDEST:
 			if ((result = ipvs_update_dest(srule, drule)) &&
-			    (errno == ENOENT))
+			    (result == EDPVS_NOTEXIST))
 				result = ipvs_add_dest(srule, drule);
 			break;
 	}
@@ -593,6 +589,10 @@ ipvs_set_rule(int cmd, virtual_server_t * vs, real_server_t * rs)
 	srule->netmask = (vs->addr.ss_family == AF_INET6) ? 128 : ((u_int32_t) 0xffffffff);
 	srule->protocol = vs->service_type;
 	srule->conn_timeout = vs->conn_timeout;
+	snprintf(srule->srange, 256, "%s", vs->srange);
+	snprintf(srule->drange, 256, "%s", vs->drange);
+	snprintf(srule->iifname, IFNAMSIZ, "%s", vs->iifname);
+	snprintf(srule->oifname, IFNAMSIZ, "%s", vs->oifname);
 
 	if (!parse_timeout(vs->timeout_persistence, &srule->timeout))
 		log_message(LOG_INFO, "IPVS : Virtual service %s illegal timeout."
@@ -617,8 +617,21 @@ ipvs_set_rule(int cmd, virtual_server_t * vs, real_server_t * rs)
 		if (vs->granularity_persistence)
 			srule->netmask = vs->granularity_persistence;
 
-	if(vs->syn_proxy)
+	if (vs->syn_proxy)
 		srule->flags |= IP_VS_CONN_F_SYNPROXY;
+
+	if (!strcmp(vs->sched, "conhash")) {
+		if (vs->hash_target) {
+			if ((srule->protocol != IPPROTO_UDP) &&
+			    (vs->hash_target == IP_VS_SVC_F_QID_HASH)) {
+				log_message(LOG_ERR, "qid hash can only be set in udp service");
+			} else {
+				srule->flags |= vs->hash_target;
+			}
+		} else {
+			srule->flags |= IP_VS_SVC_F_SIP_HASH; //default
+		}
+	}
 
 	/* SVR specific */
 	if (rs) {
@@ -976,6 +989,10 @@ ipvs_cmd(int cmd, list vs_group, virtual_server_t * vs, real_server_t * rs)
 				srule->netmask = 128;
 			}
 			srule->fwmark = vs->vfwmark;
+		} else if (vs->loadbalancing_kind == IP_VS_CONN_F_SNAT) {
+			srule->af = vs->addr.ss_family;
+			srule->addr.ip = 0;
+			srule->port = inet_sockaddrport(&vs->addr);
 		} else {
 			srule->af = vs->addr.ss_family;
 			if (vs->addr.ss_family == AF_INET6)
@@ -1604,30 +1621,4 @@ string_to_number(const char *s, int min, int max)
 			return -1;
 	} else
 		return -1;
-}
-
-static int
-modprobe_ipvs(void)
-{
-	char *argv[] = { "/sbin/modprobe", "-s", "--", "ip_vs", NULL };
-	int child;
-	int status;
-	int rc;
-
-	if (!(child = fork())) {
-		execv(argv[0], argv);
-		exit(1);
-	}
-
-	rc = waitpid(child, &status, 0);
-	if (rc < 0) {
-		log_message(LOG_INFO, "IPVS: waitpid error (%s)"
-				    , strerror(errno));
-	}
-
-	if (!WIFEXITED(status) || WEXITSTATUS(status)) {
-		return 1;
-	}
-
-	return 0;
 }

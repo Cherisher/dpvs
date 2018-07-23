@@ -37,6 +37,7 @@ enum {
     DPVS_CONN_F_INACTIVE    = 0x0100,
     DPVS_CONN_F_SYNPROXY    = 0x8000,
     DPVS_CONN_F_TEMPLATE    = 0x1000,
+    DPVS_CONN_F_NOFASTXMIT  = 0x2000,
 };
 
 struct dp_vs_conn_param {
@@ -82,12 +83,14 @@ struct dp_vs_conn {
     uint16_t                lport;
     uint16_t                dport;
 
+    struct rte_mempool      *connpool;
     struct conn_tuple_hash  tuplehash[DPVS_CONN_DIR_MAX];
     rte_atomic32_t          refcnt;
     struct dpvs_timer       timer;
     struct timeval          timeout;
     lcoreid_t               lcore;
     struct dp_vs_dest       *dest;  /* real server */
+    void                    *prot_data;  /* protocol specific data */
 
     /* for FNAT */
     struct dp_vs_laddr      *local; /* local address */
@@ -105,12 +108,16 @@ struct dp_vs_conn {
                         struct rte_mbuf *mbuf);
 
     /* L2 fast xmit */
-    struct netif_port       *in_dev;    /* inside (RS faced) */
     struct ether_addr       in_smac;
     struct ether_addr       in_dmac;
-    struct netif_port       *out_dev;   /* outside */
     struct ether_addr       out_smac;
     struct ether_addr       out_dmac;
+
+    /* route for neigbour */
+    struct netif_port       *in_dev;    /* inside to rs*/
+    struct netif_port       *out_dev;   /* outside to client*/
+    union inet_addr         in_nexthop;  /* to rs*/
+    union inet_addr         out_nexthop; /* to client*/
 
     /* statistics */
     struct dp_vs_conn_stats stats;

@@ -35,6 +35,7 @@
 #include <rte_branch_prediction.h>
 #include <rte_interrupts.h>
 #include <rte_pci.h>
+#include <rte_bus_pci.h>
 #include <rte_random.h>
 #include <rte_debug.h>
 #include <rte_ether.h>
@@ -57,7 +58,7 @@
 #include "mbuf.h"
 
 typedef uint8_t lcoreid_t;
-typedef uint8_t portid_t;
+typedef uint16_t portid_t;
 typedef uint16_t queueid_t;
 
 #endif /* __DPVS_DPDK_H__ */

@@ -25,9 +25,6 @@
 #include "conf/neigh.h"
 #include "sockopt.h"
 
-#define NEIGHBOUR_COMPLETED  0x04
-#define NEIGHBOUR_STATIC     0x10
-
 static void neigh_help(void)
 {
     fprintf(stderr,
@@ -101,7 +98,7 @@ static void neigh_dump(struct dp_vs_neigh_conf *neigh)
 {
     char ipaddr[64];
 
-    if (neigh->flag & NEIGHBOUR_COMPLETED)
+    if (neigh->state >= DPVS_NUD_S_REACHABLE)
         printf("ip: %s      mac: %02x:%02x:%02x:%02x:%02x:%02x      mbuf: %d %s\n",
             inet_ntop(neigh->af, &neigh->ip_addr, ipaddr, sizeof(ipaddr)) ? ipaddr : "::",
             neigh->eth_addr.ether_addr_octet[0],
@@ -117,6 +114,14 @@ static void neigh_dump(struct dp_vs_neigh_conf *neigh)
             neigh->que_num, (neigh->flag & NEIGHBOUR_STATIC) ? "static" : "");
     return; 
 }
+
+static inline bool is_mac_valid(const struct ether_addr *ea)
+{
+    return (ea->ether_addr_octet[0] || ea->ether_addr_octet[1] || 
+            ea->ether_addr_octet[2] || ea->ether_addr_octet[3] || 
+            ea->ether_addr_octet[4] || ea->ether_addr_octet[5]);
+}
+
 
 static int neigh_do_cmd(struct dpip_obj *obj, dpip_cmd_t cmd,
                         struct dpip_conf *conf)
@@ -148,6 +153,11 @@ static int neigh_do_cmd(struct dpip_obj *obj, dpip_cmd_t cmd,
         return EDPVS_OK; 
 
     case DPIP_CMD_ADD:
+        if (!is_mac_valid(&neigh.eth_addr)) {
+            fprintf(stderr, "invalid MAC address\n");
+            return EDPVS_INVAL;
+        }
+
         return dpvs_setsockopt(SOCKOPT_SET_NEIGH_ADD, &neigh, sizeof(neigh));
 
     case DPIP_CMD_DEL:

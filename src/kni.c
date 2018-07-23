@@ -45,7 +45,7 @@
 #define KNI_MBUFPOOL_ELEMS      65535
 #define KNI_MBUFPOOL_CACHE_SIZE 256
 
-static struct rte_mempool *kni_mbuf_pool[NETIF_MAX_SOCKETS];
+static struct rte_mempool *kni_mbuf_pool[DPVS_MAX_SOCKET];
 
 static void kni_fill_conf(const struct netif_port *dev, const char *ifname,
                           struct rte_kni_conf *conf)
@@ -221,7 +221,7 @@ static int kni_update_maddr(struct netif_port *dev)
     return kni_mc_list_cmp_set(dev, ma_list, n_ma);
 }
 
-static void kni_rtnl_check(void *arg)
+static int kni_rtnl_check(void *arg)
 {
     struct netif_port *dev = arg;
     int fd = dev->kni.kni_rtnl_fd;
@@ -243,7 +243,7 @@ static void kni_rtnl_check(void *arg)
             if (errno == EWOULDBLOCK || errno == EAGAIN)
                 break; /* no more events */
             RTE_LOG(WARNING, Kni, "fail to check kni event!\n");
-            return;
+            return DTIMER_OK;
         } else if (n == 0)
             break; /* closed */
 
@@ -258,7 +258,7 @@ static void kni_rtnl_check(void *arg)
     }
 
     if (!kni_dev_exist(dev))
-        return;
+        return DTIMER_OK;
 
     /* note we should not update kni mac list for every event ! */
     if (update) {
@@ -269,7 +269,7 @@ static void kni_rtnl_check(void *arg)
             RTE_LOG(ERR, Kni, "update maddr of %s Failed!\n", dev->name);
     }
 
-    return;
+    return DTIMER_OK;
 }
 
 static int kni_rtnl_init(struct netif_port *dev)
@@ -382,7 +382,7 @@ int kni_init(void)
     int i;
     char poolname[32];
 
-    for (i = 0; i < NETIF_MAX_SOCKETS; i++) {
+    for (i = 0; i < get_numa_nodes(); i++) {
         memset(poolname, 0, sizeof(poolname));
         snprintf(poolname, sizeof(poolname) - 1, "kni_mbuf_pool_%d", i);
 

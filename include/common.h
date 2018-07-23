@@ -19,14 +19,35 @@
 #define __DPVS_COMMON_H__
 #include <stdbool.h>
 #include <stdint.h>
+#include <unistd.h>
+#include <sys/types.h>
 #include <linux/if_ether.h>
 
 #ifndef NELEMS
 #define NELEMS(a)       (sizeof(a) / sizeof((a)[0]))
 #endif
 
+#ifndef min
+#define min(x,y) ({ \
+	typeof(x) _x = (x);	\
+	typeof(y) _y = (y);	\
+	(void) (&_x == &_y);	\
+	_x < _y ? _x : _y; })
+#endif
+
 #ifndef max
-#define max(a, b)       ((a) > (b) ? (a) : (b))
+#define max(x,y) ({ \
+	typeof(x) _x = (x);	\
+	typeof(y) _y = (y);	\
+	(void) (&_x == &_y);	\
+	_x > _y ? _x : _y; })
+#endif
+
+#ifndef min_t
+#define min_t(type, a, b) min(((type) a), ((type) b))
+#endif
+#ifndef max_t
+#define max_t(type, a, b) max(((type) a), ((type) b))
 #endif
 
 #ifndef __be32
@@ -37,7 +58,17 @@ typedef uint32_t    __be32;
 typedef uint16_t    __be16;
 #endif
 
-#define DPVS_MAX_SOCKET             2   /* num of NUMA socket */
+#ifndef __u8
+typedef uint8_t     __u8;
+#endif
+
+#ifndef __u16
+typedef uint16_t    __u16;
+#endif
+
+#ifndef __u32
+typedef uint32_t    __u32;
+#endif
 
 typedef enum {
     DPVS_STATE_STOP = 1,
@@ -88,8 +119,19 @@ enum {
 
 extern const char *dpvs_strerror(int err);
 
+int get_numa_nodes(void);
+
 int linux_set_if_mac(const char *ifname, const unsigned char mac[ETH_ALEN]);
 int linux_hw_mc_add(const char *ifname, const uint8_t hwma[ETH_ALEN]);
 int linux_hw_mc_del(const char *ifname, const uint8_t hwma[ETH_ALEN]);
+
+/* read "n" bytes from a descriptor */
+ssize_t readn(int fd, void *vptr, size_t n);
+
+/* write "n" bytes to a descriptor */
+ssize_t writen(int fd, const void *vptr, size_t n);
+
+/* send "n" bytes to a descriptor */
+ssize_t sendn(int fd, const void *vptr, size_t n, int flags);
 
 #endif /* __DPVS_COMMON_H__ */

@@ -15,7 +15,10 @@
  * GNU General Public License for more details.
  *
  */
+#define _GNU_SOURCE
+#include <pthread.h>
 #include <assert.h>
+#include <getopt.h>
 #include "pidfile.h"
 #include "dpdk.h"
 #include "common.h"
@@ -29,11 +32,104 @@
 #include "sa_pool.h"
 #include "ipvs/ipvs.h"
 #include "cfgfile.h"
+#include "ip_tunnel.h"
 
 #define DPVS    "dpvs"
 #define RTE_LOGTYPE_DPVS RTE_LOGTYPE_USER1
 
-#define LCORE_CONF_BUFFER_LEN 1024
+#define LCORE_CONF_BUFFER_LEN 4096
+
+static int set_all_thread_affinity(void)
+{
+    int s;
+    lcoreid_t cid;
+    pthread_t tid;
+    cpu_set_t cpuset;
+    unsigned long long cpumask=0;
+
+    tid = pthread_self();
+    CPU_ZERO(&cpuset);
+    for (cid = 0; cid < RTE_MAX_LCORE; cid++)
+        CPU_SET(cid, &cpuset);
+
+    s = pthread_setaffinity_np(tid, sizeof(cpu_set_t), &cpuset);
+    if (s != 0) {
+        perror("fail to set thread affinty");
+        return -1;
+    }
+
+    CPU_ZERO(&cpuset);
+    s = pthread_getaffinity_np(tid, sizeof(cpu_set_t), &cpuset);
+    if (s != 0) {
+        perror("fail to get thread affinity");
+        return -2;
+    }
+
+    for (cid = 0; cid < RTE_MAX_LCORE; cid++) {
+        if (CPU_ISSET(cid, &cpuset))
+            cpumask |= (1LL << cid);
+    }
+    printf("current thread affinity is set to %llX\n", cpumask);
+
+    return 0;
+}
+
+static void dpvs_usage(const char *prgname)
+{
+    printf("\nUsage: %s ", prgname);
+    printf("DPVS application options:\n"
+            "   -v  version     display DPVS version info\n"
+            "   -h  help        display DPVS help info\n"
+    );
+}
+
+static int parse_app_args(int argc, char **argv)
+{
+    const char *short_options = "vh";
+    char *prgname = argv[0];
+    int c, ret = -1;
+
+    const int old_optind = optind;
+    const int old_optopt = optopt;
+    char * const old_optarg = optarg;
+
+    struct option long_options[] = {
+        {"version", 0, NULL, 'v'},
+        {"help", 0, NULL, 'h'},
+        {NULL, 0, 0, 0}
+    };
+
+    optind = 1;
+
+    while ((c = getopt_long(argc, argv, short_options, long_options, NULL)) != -1) {
+        switch (c) {
+            case 'v':
+                fprintf(stderr, "dpvs version: %s, build on %s\n",
+                        DPVS_VERSION,
+                        DPVS_BUILD_DATE);
+                exit(EXIT_SUCCESS);
+            case 'h':
+                dpvs_usage(prgname);
+                exit(EXIT_SUCCESS);
+            case '?':
+            default:
+                dpvs_usage(prgname);
+                exit(EXIT_FAILURE);
+        }
+    }
+
+    if (optind > 0)
+        argv[optind-1] = prgname;
+
+    ret = optind - 1;
+
+    /* restore getopt lib */
+    optind = old_optind;
+    optopt = old_optopt;
+    optarg = old_optarg;
+
+    return ret;
+}
 
 int main(int argc, char *argv[])
 {
@@ -46,6 +142,20 @@ int main(int argc, char *argv[])
     uint32_t loop_cnt = 0;
     int timer_sched_loop_interval;
 
+    /**
+     * add application agruments parse before EAL ones.
+     * use it like the following:
+     * ./dpvs -v
+     * OR
+     * ./dpvs -- -n 4 -l 0-11 (if you want to use eal arguments)
+     */
+    err = parse_app_args(argc, argv);
+    if (err < 0) {
+        fprintf(stderr, "fail to parse application options\n");
+        exit(EXIT_FAILURE);
+    }
+    argc -= err, argv += err;
+
     /* check if dpvs is running and remove zombie pidfile */
     if (dpvs_running(DPVS_PIDFILE)) {
         fprintf(stderr, "dpvs is already running\n");
@@ -57,10 +167,22 @@ int main(int argc, char *argv[])
     gettimeofday(&tv, NULL);
     srandom(tv.tv_sec ^ tv.tv_usec ^ getpid());
 
+    if (get_numa_nodes() > DPVS_MAX_SOCKET) {
+        fprintf(stderr, "DPVS_MAX_SOCKET is smaller than system numa nodes!\n");
+        return -1;
+    }
+
+    if (set_all_thread_affinity() != 0) {
+        fprintf(stderr, "set_all_thread_affinity failed\n");
+        exit(EXIT_FAILURE);
+    }
+
     err = rte_eal_init(argc, argv);
     if (err < 0)
         rte_exit(EXIT_FAILURE, "Invalid EAL parameters\n");
     argc -= err, argv += err;
+
+    RTE_LOG(INFO, DPVS, "dpvs version: %s, build on %s\n", DPVS_VERSION, DPVS_BUILD_DATE);
 
     rte_timer_subsystem_init();
 
@@ -75,28 +197,39 @@ int main(int argc, char *argv[])
     if ((err = dpvs_timer_init()) != EDPVS_OK)
         rte_exit(EXIT_FAILURE, "Fail init timer on %s\n", dpvs_strerror(err));
 
-    if ((err = netif_init(NULL)) != 0)
+    if ((err = tc_init()) != EDPVS_OK)
+        rte_exit(EXIT_FAILURE, "Fail to init traffic control: %s\n",
+                 dpvs_strerror(err));
+
+    if ((err = netif_init(NULL)) != EDPVS_OK)
         rte_exit(EXIT_FAILURE, "Fail to init netif: %s\n", dpvs_strerror(err));
     /* Default lcore conf and port conf are used and may be changed here 
      * with "netif_port_conf_update" and "netif_lcore_conf_set" */
 
-    if ((err = ctrl_init()) != 0 )
+    if ((err = ctrl_init()) != EDPVS_OK)
         rte_exit(EXIT_FAILURE, "Fail to init ctrl plane: %s\n",
+                 dpvs_strerror(err));
+
+    if ((err = tc_ctrl_init()) != EDPVS_OK)
+        rte_exit(EXIT_FAILURE, "Fail to init tc control plane: %s\n",
                  dpvs_strerror(err));
 
     if ((err = vlan_init()) != EDPVS_OK)
         rte_exit(EXIT_FAILURE, "Fail to init vlan: %s\n", dpvs_strerror(err));
 
-    if ((err = inet_init()) != 0)
+    if ((err = inet_init()) != EDPVS_OK)
         rte_exit(EXIT_FAILURE, "Fail to init inet: %s\n", dpvs_strerror(err));
 
-    if ((err = sa_pool_init()) != 0)
+    if ((err = sa_pool_init()) != EDPVS_OK)
         rte_exit(EXIT_FAILURE, "Fail to init sa_pool: %s\n", dpvs_strerror(err));
+
+    if ((err = ip_tunnel_init()) != EDPVS_OK)
+        rte_exit(EXIT_FAILURE, "Fail to init tunnel: %s\n", dpvs_strerror(err));
 
     if ((err = dp_vs_init()) != EDPVS_OK)
         rte_exit(EXIT_FAILURE, "Fail to init ipvs: %s\n", dpvs_strerror(err));
 
-    if ((err = netif_ctrl_init()) !=0 )
+    if ((err = netif_ctrl_init()) != EDPVS_OK)
         rte_exit(EXIT_FAILURE, "Fail to init netif_ctrl: %s\n",
                  dpvs_strerror(err));
 
@@ -140,12 +273,16 @@ int main(int argc, char *argv[])
         sockopt_ctl(NULL);
         /* msg loop */
         msg_master_process();
+
         /* timer */
         loop_cnt++;
         if (loop_cnt % timer_sched_loop_interval == 0)
             rte_timer_manage();
         /* kni */
         kni_process_on_master();
+
+        /* process mac ring on master */
+        neigh_process_ring(NULL);
  
         /* increase loop counts */
         netif_update_master_loop_cnt();
@@ -158,6 +295,8 @@ end:
                  dpvs_strerror(err));
     if ((err = dp_vs_term()) != EDPVS_OK)
         RTE_LOG(ERR, DPVS, "Fail to term ipvs: %s\n", dpvs_strerror(err));
+    if ((err = ip_tunnel_term()) != EDPVS_OK)
+        RTE_LOG(ERR, DPVS, "Fail to term tunnel: %s\n", dpvs_strerror(err));
     if ((err = sa_pool_term()) != EDPVS_OK)
         RTE_LOG(ERR, DPVS, "Fail to term sa_pool: %s\n", dpvs_strerror(err));
     if ((err = inet_term()) != EDPVS_OK)
